@@ -22,80 +22,134 @@ import me.nithanim.quarkus.azure.generic.function.extension.deployment.FunctionC
 import me.nithanim.quarkus.azure.genericfunction.FunctionBaseInterface;
 import me.nithanim.quarkus.azure.genericfunction.FunctionBrain;
 
+import static me.nithanim.quarkus.azure.generic.function.extension.deployment.proxygen.ProxyGeneratorUtil.convertType;
+import static me.nithanim.quarkus.azure.generic.function.extension.deployment.proxygen.ProxyGeneratorUtil.dotNameToType;
+import static me.nithanim.quarkus.azure.generic.function.extension.deployment.proxygen.ProxyGeneratorUtil.getDescriptor;
+import static me.nithanim.quarkus.azure.generic.function.extension.deployment.proxygen.ProxyGeneratorUtil.getExceptions;
+import static me.nithanim.quarkus.azure.generic.function.extension.deployment.proxygen.ProxyGeneratorUtil.getInternalName;
+
 // https://asm.ow2.io/asm4-guide.pdf
 public class ProxyGenerator {
   public FunctionClassBuildItem generateProxy(ClassInfo classInfo, List<MethodInfo> methodInfos) {
     DotName originalClassName = classInfo.name();
-    DotName proxyClassName =
-        DotName.createComponentized(
-            originalClassName.prefix(), originalClassName.local() + "QuarkusEntryProxy");
+    DotName proxyClassName = makeProxyClassName(originalClassName);
 
-    String proxyClassInternalName = proxyClassName.toString('/');
+    String proxyClassInternalName = getInternalName(proxyClassName);
     ClassWriter cw = new QuarkusClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
-    ClassVisitor cv = cw; // new TraceClassVisitor(cw, new PrintWriter(System.out));
+    visitProxyClass(methodInfos, originalClassName, proxyClassInternalName, cw);
+    return new FunctionClassBuildItem(
+        proxyClassName,
+        methodInfos.stream().map(MethodInfo::name).collect(Collectors.toList()),
+        cw.toByteArray());
+  }
 
+  private void visitProxyClass(
+      List<MethodInfo> methodInfos,
+      DotName originalClassName,
+      String proxyClassInternalName,
+      ClassVisitor cv) {
+
+    // cv = new TraceClassVisitor(cv, new PrintWriter(System.out));
+    // alternatively, quarkus can also dump generated/transformed classes.
+    // quarkus.debug.generated-classes-dir
+    // quarkus.debug.transformed-classes-dir
+
+    visitClassHeader(cv, proxyClassInternalName);
+
+    visitDelegateField(cv, originalClassName);
+
+    visitMethodConstructor(cv);
+    visitMethodSetDelegate(cv, originalClassName, proxyClassInternalName);
+    visitMethodGetDelegateClass(originalClassName, cv);
+
+    for (MethodInfo methodInfo : methodInfos) {
+      visitMethodEntry(cv, originalClassName, proxyClassInternalName, methodInfo);
+    }
+
+    cv.visitEnd();
+  }
+
+  private void visitMethodConstructor(ClassVisitor cv) {
+    MethodVisitor mv = cv.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+    mv.visitCode();
+    mv.visitVarInsn(Opcodes.ALOAD, 0);
+    mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+    mv.visitInsn(Opcodes.RETURN);
+    mv.visitMaxs(1, 1);
+    mv.visitEnd();
+  }
+
+  private void visitMethodSetDelegate(
+      ClassVisitor cv, DotName originalClassName, String proxyClassInternalName) {
+    String descriptor = "(Ljava/lang/Object;)V";
+    MethodVisitor mv = cv.visitMethod(Opcodes.ACC_PUBLIC, "setDelegate", descriptor, null, null);
+
+    mv.visitAnnotation("Ljava/lang/Override;", true).visitEnd();
+
+    mv.visitCode();
+    mv.visitIntInsn(Opcodes.ALOAD, 0);
+    mv.visitIntInsn(Opcodes.ALOAD, 1);
+    mv.visitTypeInsn(
+        Opcodes.CHECKCAST, DescriptorUtils.objectToInternalClassName(originalClassName.toString()));
+    mv.visitFieldInsn(
+        Opcodes.PUTFIELD,
+            proxyClassInternalName,
+        "delegate",
+        dotNameToType(originalClassName).getDescriptor());
+
+    mv.visitInsn(Opcodes.RETURN);
+    mv.visitMaxs(3, 3);
+    mv.visitEnd();
+  }
+
+  private void visitMethodGetDelegateClass(DotName originalClassName, ClassVisitor cv) {
+    String descriptor = "()Ljava/lang/Class;";
+    MethodVisitor mv =
+        cv.visitMethod(Opcodes.ACC_PUBLIC, "getDelegateClass", descriptor, null, null);
+    mv.visitCode();
+    mv.visitLdcInsn(dotNameToType(originalClassName));
+    mv.visitInsn(Opcodes.ARETURN);
+    mv.visitMaxs(1, 1);
+    mv.visitEnd();
+  }
+
+  private void visitMethodEntry(
+      ClassVisitor cv,
+      DotName originalClassName,
+      String proxyClassInternalName,
+      MethodInfo methodInfo) {
+
+    String descriptor = getDescriptor(methodInfo);
+    String[] exceptions = getExceptions(methodInfo);
+    MethodVisitor mv =
+        cv.visitMethod(Opcodes.ACC_PUBLIC, methodInfo.name(), descriptor, null, exceptions);
+    buildHandlerMethod(originalClassName, methodInfo, proxyClassInternalName, descriptor, mv);
+    mv.visitMaxs(3, 3); // For some reason the automatic calculation does not work
+    mv.visitEnd();
+  }
+
+  private void visitDelegateField(ClassVisitor cv, DotName originalClassName) {
+    cv.visitField(
+        Opcodes.ACC_PUBLIC,
+        "delegate",
+        dotNameToType(originalClassName).getDescriptor(),
+        null,
+        null);
+  }
+
+  private DotName makeProxyClassName(DotName originalClassName) {
+    return DotName.createComponentized(
+        originalClassName.prefix(), originalClassName.local() + "QuarkusEntryProxy");
+  }
+
+  private void visitClassHeader(ClassVisitor cv, String proxyClassInternalName) {
     cv.visit(
         Opcodes.V1_5,
         Opcodes.ACC_PUBLIC,
         proxyClassInternalName,
         null,
         "java/lang/Object",
-        new String[] {ProxyGeneratorUtil.getInternalName(FunctionBaseInterface.class)});
-    // TODO PLAN:
-    // Make recorder together with proxy that sets the original handler as this delegate
-
-    cv.visitField(
-        Opcodes.ACC_PUBLIC,
-        "delegate",
-        ProxyGeneratorUtil.dotNameToType(originalClassName).getDescriptor(),
-        null,
-        null);
-
-    for (MethodInfo methodInfo : methodInfos) {
-      String descriptor = ProxyGeneratorUtil.getDescriptor(methodInfo);
-      String[] exceptions = ProxyGeneratorUtil.getExceptions(methodInfo);
-      MethodVisitor mv =
-          cv.visitMethod(Opcodes.ACC_PUBLIC, methodInfo.name(), descriptor, null, exceptions);
-      // mv.visitAnnotationDefault();
-      // mv.visitAnnotation();
-      // mv.visitParameterAnnotation();
-      buildHandlerMethod(originalClassName, methodInfo, proxyClassInternalName, descriptor, mv);
-      mv.visitMaxs(3, 3); // For some reason the automatic calculation does not work
-      mv.visitEnd();
-    }
-
-    {
-      String descriptor = "(Ljava/lang/Object;)V";
-      MethodVisitor mv = cv.visitMethod(Opcodes.ACC_PUBLIC, "setDelegate", descriptor, null, null);
-      buildSetter(originalClassName, proxyClassInternalName, mv);
-      mv.visitMaxs(3, 3);
-      mv.visitEnd();
-    }
-    {
-      String descriptor = "()Ljava/lang/Class;";
-      MethodVisitor mv =
-          cv.visitMethod(Opcodes.ACC_PUBLIC, "getDelegateClass", descriptor, null, null);
-      mv.visitCode();
-      mv.visitLdcInsn(ProxyGeneratorUtil.dotNameToType(originalClassName));
-      mv.visitInsn(Opcodes.ARETURN);
-      mv.visitMaxs(1, 1);
-      mv.visitEnd();
-    }
-    {
-      MethodVisitor mv = cv.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
-      mv.visitCode();
-      mv.visitVarInsn(Opcodes.ALOAD, 0);
-      mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
-      mv.visitInsn(Opcodes.RETURN);
-      mv.visitMaxs(1, 1);
-      mv.visitEnd();
-    }
-
-    cv.visitEnd();
-    return new FunctionClassBuildItem(
-        proxyClassName,
-        methodInfos.stream().map(MethodInfo::name).collect(Collectors.toList()),
-        cw.toByteArray());
+        new String[] {getInternalName(FunctionBaseInterface.class)});
   }
 
   private void buildHandlerMethod(
@@ -108,15 +162,14 @@ public class ProxyGenerator {
     for (AnnotationInstance annotationInstance : methodInfo.annotations()) {
       if (annotationInstance.target().kind() == AnnotationTarget.Kind.METHOD) {
         AnnotationVisitor av =
-            mv.visitAnnotation(
-                ProxyGeneratorUtil.dotNameToType(annotationInstance.name()).getDescriptor(), true);
+            mv.visitAnnotation(dotNameToType(annotationInstance.name()).getDescriptor(), true);
         visitAnnotations(annotationInstance, av);
         av.visitEnd();
       } else if (annotationInstance.target().kind() == AnnotationTarget.Kind.METHOD_PARAMETER) {
         AnnotationVisitor av =
             mv.visitParameterAnnotation(
                 annotationInstance.target().asMethodParameter().position(),
-                ProxyGeneratorUtil.dotNameToType(annotationInstance.name()).getDescriptor(),
+                dotNameToType(annotationInstance.name()).getDescriptor(),
                 true);
         visitAnnotations(annotationInstance, av);
         av.visitEnd();
@@ -124,27 +177,18 @@ public class ProxyGenerator {
     }
 
     mv.visitCode();
-    // mv.visitFrame();
-    /*mv.visitMethodInsn(
-    Opcodes.INVOKESTATIC,
-    "me/nithanim/quarkus/azure/genericfunction/QuarkusBootstrap",
-    "ensureBootstrapped",
-    "()V",
-    false);*/
     mv.visitIntInsn(Opcodes.ALOAD, 0);
     mv.visitInsn(Opcodes.DUP);
     mv.visitFieldInsn(
         Opcodes.GETFIELD,
         proxyClassInternalName,
         "delegate",
-        ProxyGeneratorUtil.dotNameToType(originalClassName).getDescriptor());
+        dotNameToType(originalClassName).getDescriptor());
     mv.visitMethodInsn(
         Opcodes.INVOKESTATIC,
-        ProxyGeneratorUtil.getInternalName(FunctionBrain.class),
+        getInternalName(FunctionBrain.class),
         "detour",
-        "(L"
-            + ProxyGeneratorUtil.getInternalName(FunctionBaseInterface.class)
-            + ";Ljava/lang/Object;)V",
+        "(L" + getInternalName(FunctionBaseInterface.class) + ";Ljava/lang/Object;)V",
         false);
 
     mv.visitIntInsn(Opcodes.ALOAD, 0);
@@ -152,39 +196,20 @@ public class ProxyGenerator {
         Opcodes.GETFIELD,
         proxyClassInternalName,
         "delegate",
-        ProxyGeneratorUtil.dotNameToType(originalClassName).getDescriptor());
+        dotNameToType(originalClassName).getDescriptor());
     int p = 1;
     for (Type parameterType : methodInfo.parameters()) {
-      var asmParameterType = ProxyGeneratorUtil.convertType(parameterType);
+      var asmParameterType = convertType(parameterType);
       mv.visitIntInsn(asmParameterType.getOpcode(Opcodes.ILOAD), p++);
     }
     mv.visitMethodInsn(
         Opcodes.INVOKEVIRTUAL,
-        ProxyGeneratorUtil.dotNameToType(originalClassName).getInternalName(),
+        dotNameToType(originalClassName).getInternalName(),
         methodInfo.name(),
         descriptor,
         false);
-    var asmReturnType = ProxyGeneratorUtil.convertType(methodInfo.returnType());
+    var asmReturnType = convertType(methodInfo.returnType());
     mv.visitInsn(asmReturnType.getOpcode(Opcodes.IRETURN));
-  }
-
-  private void buildSetter(
-      DotName originalClassName, String proxyClassInternalName, MethodVisitor mv) {
-
-    mv.visitAnnotation("Ljava/lang/Override;", true).visitEnd();
-
-    mv.visitCode();
-    mv.visitIntInsn(Opcodes.ALOAD, 0);
-    mv.visitIntInsn(Opcodes.ALOAD, 1);
-    mv.visitTypeInsn(
-        Opcodes.CHECKCAST, DescriptorUtils.objectToInternalClassName(originalClassName.toString()));
-    mv.visitFieldInsn(
-        Opcodes.PUTFIELD,
-        proxyClassInternalName,
-        "delegate",
-        ProxyGeneratorUtil.dotNameToType(originalClassName).getDescriptor());
-
-    mv.visitInsn(Opcodes.RETURN);
   }
 
   private void visitAnnotations(AnnotationInstance annotationInstance, AnnotationVisitor av) {
@@ -197,9 +222,7 @@ public class ProxyGenerator {
     switch (value.kind()) {
       case ENUM:
         av.visitEnum(
-            value.name(),
-            ProxyGeneratorUtil.dotNameToType(value.asEnumType()).getDescriptor(),
-            value.asEnum());
+            value.name(), dotNameToType(value.asEnumType()).getDescriptor(), value.asEnum());
         break;
       case NESTED:
         var av2 = av.visitAnnotation(value.name(), null);
