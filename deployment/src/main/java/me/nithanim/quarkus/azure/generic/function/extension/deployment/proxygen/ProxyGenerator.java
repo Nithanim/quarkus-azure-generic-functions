@@ -13,6 +13,7 @@ import org.jboss.jandex.Type;
 import org.objectweb.asm.AnnotationVisitor;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 
@@ -75,7 +76,7 @@ public class ProxyGenerator {
     mv.visitVarInsn(Opcodes.ALOAD, 0);
     mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
     mv.visitInsn(Opcodes.RETURN);
-    mv.visitMaxs(1, 1);
+    mv.visitMaxs(-1, -1);
     mv.visitEnd();
   }
 
@@ -87,18 +88,18 @@ public class ProxyGenerator {
     mv.visitAnnotation("Ljava/lang/Override;", true).visitEnd();
 
     mv.visitCode();
-    mv.visitIntInsn(Opcodes.ALOAD, 0);
+    instructionThis(mv);
     mv.visitIntInsn(Opcodes.ALOAD, 1);
     mv.visitTypeInsn(
         Opcodes.CHECKCAST, DescriptorUtils.objectToInternalClassName(originalClassName.toString()));
     mv.visitFieldInsn(
         Opcodes.PUTFIELD,
-            proxyClassInternalName,
+        proxyClassInternalName,
         "delegate",
         dotNameToType(originalClassName).getDescriptor());
 
     mv.visitInsn(Opcodes.RETURN);
-    mv.visitMaxs(3, 3);
+    mv.visitMaxs(-1, -1);
     mv.visitEnd();
   }
 
@@ -109,7 +110,7 @@ public class ProxyGenerator {
     mv.visitCode();
     mv.visitLdcInsn(dotNameToType(originalClassName));
     mv.visitInsn(Opcodes.ARETURN);
-    mv.visitMaxs(1, 1);
+    mv.visitMaxs(-1, -1);
     mv.visitEnd();
   }
 
@@ -124,7 +125,6 @@ public class ProxyGenerator {
     MethodVisitor mv =
         cv.visitMethod(Opcodes.ACC_PUBLIC, methodInfo.name(), descriptor, null, exceptions);
     buildHandlerMethod(originalClassName, methodInfo, proxyClassInternalName, descriptor, mv);
-    mv.visitMaxs(3, 3); // For some reason the automatic calculation does not work
     mv.visitEnd();
   }
 
@@ -177,26 +177,24 @@ public class ProxyGenerator {
     }
 
     mv.visitCode();
-    mv.visitIntInsn(Opcodes.ALOAD, 0);
-    mv.visitInsn(Opcodes.DUP);
-    mv.visitFieldInsn(
-        Opcodes.GETFIELD,
-        proxyClassInternalName,
-        "delegate",
-        dotNameToType(originalClassName).getDescriptor());
+    instructionThis(mv);
+    instructionLoadDelegate(mv, originalClassName, proxyClassInternalName);
+
+    Label lbl = new Label();
+    mv.visitJumpInsn(Opcodes.IFNONNULL, lbl);
+
+    instructionThis(mv);
     mv.visitMethodInsn(
         Opcodes.INVOKESTATIC,
         getInternalName(FunctionBrain.class),
         "detour",
-        "(L" + getInternalName(FunctionBaseInterface.class) + ";Ljava/lang/Object;)V",
+        "(L" + getInternalName(FunctionBaseInterface.class) + ";)V",
         false);
 
-    mv.visitIntInsn(Opcodes.ALOAD, 0);
-    mv.visitFieldInsn(
-        Opcodes.GETFIELD,
-        proxyClassInternalName,
-        "delegate",
-        dotNameToType(originalClassName).getDescriptor());
+    mv.visitLabel(lbl);
+
+    instructionThis(mv);
+    instructionLoadDelegate(mv, originalClassName, proxyClassInternalName);
     int p = 1;
     for (Type parameterType : methodInfo.parameters()) {
       var asmParameterType = convertType(parameterType);
@@ -210,6 +208,20 @@ public class ProxyGenerator {
         false);
     var asmReturnType = convertType(methodInfo.returnType());
     mv.visitInsn(asmReturnType.getOpcode(Opcodes.IRETURN));
+    mv.visitMaxs(-1, -1);
+  }
+
+  private void instructionLoadDelegate(
+      MethodVisitor mv, DotName originalClassName, String proxyClassInternalName) {
+    mv.visitFieldInsn(
+        Opcodes.GETFIELD,
+        proxyClassInternalName,
+        "delegate",
+        dotNameToType(originalClassName).getDescriptor());
+  }
+
+  private void instructionThis(MethodVisitor mv) {
+    mv.visitIntInsn(Opcodes.ALOAD, 0);
   }
 
   private void visitAnnotations(AnnotationInstance annotationInstance, AnnotationVisitor av) {
