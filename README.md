@@ -9,7 +9,14 @@ At work I currently have it running and seems to work flawlessly for a simple ht
 > It requires a custom version of https://github.com/Nithanim/azure-maven-plugins where the usage of reflection is replaced by jandex.
 
 
-LICENSING:
+
+## How it works
+
+For each class with methods annotated with `@FunctionName` a proxy is generated.
+This proxy loads Quarkus and delegates all invocations to your original function.
+
+
+## LICENSING
 Not sure because the Azure Maven Plugin is MIT and all Quarkus stuff in APACHE 2.
 I mean the Azure Maven Plugin stuff is pretty much a dependency only so there should not be a problem.
 Though, Quarkus stuff has been copied over (from the existing functions plugin, mostly), so it might be APACHE 2?
