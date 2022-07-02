@@ -24,8 +24,12 @@ class QuarkusBootstrapBase {
   private static void initQuarkus() {
     StringWriter error = new StringWriter();
     PrintWriter errorWriter = new PrintWriter(error, true);
-    if (Application.currentApplication()
-        == null) { // were we already bootstrapped?  Needed for mock azure unit testing.
+    if (Application.currentApplication() == null) {
+      // This "if" is there for unit testing.
+      // In Azure, Quarkus is not initialized, so we do that here.
+      // In unit tests, the Quarkus instance is already provided by the "@QuarkusTest".
+      // We just take this provided instance and skip the manual dance.
+
       try {
         Class<?> appClass = Class.forName("io.quarkus.runner.ApplicationImpl");
         String[] args = {};
