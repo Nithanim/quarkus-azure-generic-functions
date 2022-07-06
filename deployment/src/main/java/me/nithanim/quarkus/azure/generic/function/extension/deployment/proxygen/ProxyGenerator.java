@@ -3,14 +3,10 @@ package me.nithanim.quarkus.azure.generic.function.extension.deployment.proxygen
 import java.util.List;
 import java.util.stream.Collectors;
 
-import org.jboss.jandex.AnnotationInstance;
-import org.jboss.jandex.AnnotationTarget;
-import org.jboss.jandex.AnnotationValue;
 import org.jboss.jandex.ClassInfo;
 import org.jboss.jandex.DotName;
 import org.jboss.jandex.MethodInfo;
 import org.jboss.jandex.Type;
-import org.objectweb.asm.AnnotationVisitor;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Label;
@@ -23,6 +19,7 @@ import me.nithanim.quarkus.azure.generic.function.extension.deployment.FunctionC
 import me.nithanim.quarkus.azure.genericfunction.FunctionBaseInterface;
 import me.nithanim.quarkus.azure.genericfunction.FunctionBrain;
 
+import static me.nithanim.quarkus.azure.generic.function.extension.deployment.proxygen.AnnotationUtil.visitAnnotations;
 import static me.nithanim.quarkus.azure.generic.function.extension.deployment.proxygen.ProxyGeneratorUtil.convertType;
 import static me.nithanim.quarkus.azure.generic.function.extension.deployment.proxygen.ProxyGeneratorUtil.dotNameToType;
 import static me.nithanim.quarkus.azure.generic.function.extension.deployment.proxygen.ProxyGeneratorUtil.getDescriptor;
@@ -159,22 +156,7 @@ public class ProxyGenerator {
       String descriptor,
       MethodVisitor mv) {
 
-    for (AnnotationInstance annotationInstance : methodInfo.annotations()) {
-      if (annotationInstance.target().kind() == AnnotationTarget.Kind.METHOD) {
-        AnnotationVisitor av =
-            mv.visitAnnotation(dotNameToType(annotationInstance.name()).getDescriptor(), true);
-        visitAnnotations(annotationInstance, av);
-        av.visitEnd();
-      } else if (annotationInstance.target().kind() == AnnotationTarget.Kind.METHOD_PARAMETER) {
-        AnnotationVisitor av =
-            mv.visitParameterAnnotation(
-                annotationInstance.target().asMethodParameter().position(),
-                dotNameToType(annotationInstance.name()).getDescriptor(),
-                true);
-        visitAnnotations(annotationInstance, av);
-        av.visitEnd();
-      }
-    }
+    visitAnnotations(methodInfo, mv);
 
     mv.visitCode();
     instructionThis(mv);
@@ -222,36 +204,5 @@ public class ProxyGenerator {
 
   private void instructionThis(MethodVisitor mv) {
     mv.visitIntInsn(Opcodes.ALOAD, 0);
-  }
-
-  private void visitAnnotations(AnnotationInstance annotationInstance, AnnotationVisitor av) {
-    for (AnnotationValue value : annotationInstance.values()) {
-      visitAnnotationValue(av, value);
-    }
-  }
-
-  private void visitAnnotationValue(AnnotationVisitor av, AnnotationValue value) {
-    switch (value.kind()) {
-      case ENUM:
-        av.visitEnum(
-            value.name(), dotNameToType(value.asEnumType()).getDescriptor(), value.asEnum());
-        break;
-      case NESTED:
-        var av2 = av.visitAnnotation(value.name(), null);
-        System.out.println(av2);
-        av2.visitEnd();
-        break;
-      case ARRAY:
-        var av3 = av.visitArray(value.name());
-        for (AnnotationValue annotationValue : (AnnotationValue[]) value.value()) {
-          visitAnnotationValue(av3, annotationValue);
-        }
-        av3.visitEnd();
-        break;
-      case UNKNOWN:
-        break;
-      default:
-        av.visit(value.name(), value.value());
-    }
   }
 }
