@@ -1,11 +1,13 @@
 package me.nithanim.quarkus.azure.generic.function.extension.deployment;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
 import org.jboss.jandex.AnnotationInstance;
 import org.jboss.jandex.AnnotationTarget;
+import org.jboss.jandex.ClassInfo;
 import org.jboss.jandex.DotName;
 import org.jboss.jandex.MethodInfo;
 import org.jboss.logging.Logger;
@@ -48,37 +50,58 @@ public class FunctionProcessor {
     DotName functionNameAnnotation = DotName.createSimple(FunctionName.class.getName());
     var allAnnotations = index.getIndex().getAnnotations(functionNameAnnotation);
 
-    Map<DotName, List<AnnotationInstance>> byClasses =
-        allAnnotations.stream()
-            .collect(Collectors.groupingBy(a -> a.target().asMethod().declaringClass().name()));
+    Map<DotName, List<AnnotationInstance>> byClasses = groupByClasses(allAnnotations);
 
     for (List<AnnotationInstance> annotationsInOneClass : byClasses.values()) {
-      var classInfo = annotationsInOneClass.get(0).target().asMethod().declaringClass();
+      var classInfo = getClass(annotationsInOneClass);
+      List<MethodInfo> methods = getMethods(allAnnotations);
 
-      List<MethodInfo> methods =
-          allAnnotations.stream()
-              .map(AnnotationInstance::target)
-              .map(AnnotationTarget::asMethod)
-              .collect(Collectors.toList());
-
-      FunctionClassBuildItem functionClassBuildItem =
-          new ProxyGenerator().generateProxy(classInfo, methods);
+      FunctionClassBuildItem functionClassBuildItem = generateProxy(classInfo, methods);
       functionClassBuildItemBuildProducer.produce(functionClassBuildItem);
-      GeneratedClassBuildItem item =
-          new GeneratedClassBuildItem(
-              true,
-              ProxyGeneratorUtil.getInternalName(functionClassBuildItem.getClassName()),
-              functionClassBuildItem.getClassFile());
-      generatedClasses.produce(item);
-      unremovableBeanProducer.produce(UnremovableBeanBuildItem.beanTypes(classInfo.name()));
+      generatedClasses.produce(getGeneratedClassBuildItem(functionClassBuildItem));
+      unremovableBeanProducer.produce(getUnremovableBeanBuildItem(classInfo));
       log.info("Generated " + functionClassBuildItem.getClassName());
 
-      transformers.produce(
-          new BytecodeTransformerBuildItem(
-              classInfo.name().toString(),
-              (className, outputClassVisitor) ->
-                  new AnnotationRemoverClassVisitor(
-                      /*new TraceClassVisitor(*/ outputClassVisitor /*, new PrintWriter(System.out))*/)));
+      transformers.produce(getBytecodeTransformerBuildItem(classInfo));
     }
+  }
+
+  private Map<DotName, List<AnnotationInstance>> groupByClasses(
+      Collection<AnnotationInstance> allAnnotations) {
+    return allAnnotations.stream()
+        .collect(Collectors.groupingBy(a -> a.target().asMethod().declaringClass().name()));
+  }
+
+  private ClassInfo getClass(List<AnnotationInstance> annotationsInOneClass) {
+    return annotationsInOneClass.get(0).target().asMethod().declaringClass();
+  }
+
+  private List<MethodInfo> getMethods(Collection<AnnotationInstance> allAnnotations) {
+    return allAnnotations.stream()
+        .map(AnnotationInstance::target)
+        .map(AnnotationTarget::asMethod)
+        .collect(Collectors.toList());
+  }
+
+  private FunctionClassBuildItem generateProxy(ClassInfo classInfo, List<MethodInfo> methods) {
+    return new ProxyGenerator().generateProxy(classInfo, methods);
+  }
+
+  private GeneratedClassBuildItem getGeneratedClassBuildItem(
+      FunctionClassBuildItem functionClassBuildItem) {
+    return new GeneratedClassBuildItem(
+        true,
+        ProxyGeneratorUtil.getInternalName(functionClassBuildItem.getClassName()),
+        functionClassBuildItem.getClassFile());
+  }
+
+  private BytecodeTransformerBuildItem getBytecodeTransformerBuildItem(ClassInfo classInfo) {
+    return new BytecodeTransformerBuildItem(
+        classInfo.name().toString(),
+        (className, outputClassVisitor) -> new AnnotationRemoverClassVisitor(outputClassVisitor));
+  }
+
+  private UnremovableBeanBuildItem getUnremovableBeanBuildItem(ClassInfo classInfo) {
+    return UnremovableBeanBuildItem.beanTypes(classInfo.name());
   }
 }
