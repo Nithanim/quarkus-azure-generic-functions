@@ -36,6 +36,7 @@ import io.quarkus.deployment.pkg.PackageConfig;
 import io.quarkus.deployment.pkg.builditem.CurateOutcomeBuildItem;
 import io.quarkus.deployment.pkg.builditem.JarBuildItem;
 import io.quarkus.deployment.pkg.builditem.OutputTargetBuildItem;
+import me.nithanim.quarkus.azure.generic.function.extension.deployment.builditems.FunctionClassResultBuildItem;
 
 public class FunctionPackager {
 
@@ -60,7 +61,7 @@ public class FunctionPackager {
       CurateOutcomeBuildItem curateOutcomeBuildItem,
       OutputTargetBuildItem outputTargetBuildItem,
       PackageConfig packageConfig,
-      List<FunctionClassBuildItem> functionClassBuildItems,
+      List<FunctionClassResultBuildItem> functionClassResultBuildItems,
       CombinedIndexBuildItem baseIndex,
       @SuppressWarnings("unused") JarBuildItem jar)
       throws IOException {
@@ -69,8 +70,9 @@ public class FunctionPackager {
     indexer.indexClass(Override.class);
     indexer.indexClass(Target.class);
     indexer.indexClass(Retention.class);
-    for (FunctionClassBuildItem functionClassBuildItem : functionClassBuildItems) {
-      byte[] classFile = functionClassBuildItem.getClassFile();
+    for (FunctionClassResultBuildItem functionClassResultBuildItem :
+        functionClassResultBuildItems) {
+      byte[] classFile = functionClassResultBuildItem.getClassFile();
       ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(classFile);
       indexer.index(byteArrayInputStream);
     }
@@ -80,7 +82,7 @@ public class FunctionPackager {
     // IndexView index = baseIndex.getIndex();
 
     Set<MethodInfo> generatedClasses =
-        functionClassBuildItems.stream()
+        functionClassResultBuildItems.stream()
             .flatMap(
                 bi -> {
                   var clazz = index.getClassByName(bi.getClassName());

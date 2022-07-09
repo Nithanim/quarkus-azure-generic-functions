@@ -15,7 +15,7 @@ import org.objectweb.asm.Opcodes;
 
 import io.quarkus.deployment.QuarkusClassWriter;
 import io.quarkus.gizmo.DescriptorUtils;
-import me.nithanim.quarkus.azure.generic.function.extension.deployment.FunctionClassBuildItem;
+import me.nithanim.quarkus.azure.generic.function.extension.deployment.builditems.FunctionClassResultBuildItem;
 import me.nithanim.quarkus.azure.genericfunction.FunctionBaseInterface;
 import me.nithanim.quarkus.azure.genericfunction.FunctionBrain;
 
@@ -28,14 +28,15 @@ import static me.nithanim.quarkus.azure.generic.function.extension.deployment.pr
 
 // https://asm.ow2.io/asm4-guide.pdf
 public class ProxyGenerator {
-  public FunctionClassBuildItem generateProxy(ClassInfo classInfo, List<MethodInfo> methodInfos) {
+  public FunctionClassResultBuildItem generateProxy(
+      ClassInfo classInfo, List<MethodInfo> methodInfos) {
     DotName originalClassName = classInfo.name();
     DotName proxyClassName = makeProxyClassName(originalClassName);
 
     String proxyClassInternalName = getInternalName(proxyClassName);
     ClassWriter cw = new QuarkusClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
     visitProxyClass(methodInfos, originalClassName, proxyClassInternalName, cw);
-    return new FunctionClassBuildItem(
+    return new FunctionClassResultBuildItem(
         proxyClassName,
         methodInfos.stream().map(MethodInfo::name).collect(Collectors.toList()),
         cw.toByteArray());
