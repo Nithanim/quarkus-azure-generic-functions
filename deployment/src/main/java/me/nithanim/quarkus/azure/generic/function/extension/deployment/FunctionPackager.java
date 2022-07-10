@@ -1,24 +1,19 @@
 package me.nithanim.quarkus.azure.generic.function.extension.deployment;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.lang.annotation.Retention;
-import java.lang.annotation.Target;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 
-import org.jboss.jandex.CompositeIndex;
-import org.jboss.jandex.Index;
-import org.jboss.jandex.IndexView;
-import org.jboss.jandex.Indexer;
-import org.jboss.jandex.MethodInfo;
+import org.jetbrains.annotations.NotNull;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -29,14 +24,15 @@ import com.microsoft.azure.toolkit.lib.legacy.function.handlers.AnnotationHandle
 import com.microsoft.azure.toolkit.lib.legacy.function.handlers.AnnotationHandlerImpl;
 
 import io.quarkus.deployment.annotations.BuildStep;
-import io.quarkus.deployment.builditem.CombinedIndexBuildItem;
 import io.quarkus.deployment.builditem.GeneratedFileSystemResourceBuildItem;
 import io.quarkus.deployment.builditem.IndexDependencyBuildItem;
 import io.quarkus.deployment.pkg.PackageConfig;
 import io.quarkus.deployment.pkg.builditem.CurateOutcomeBuildItem;
 import io.quarkus.deployment.pkg.builditem.JarBuildItem;
 import io.quarkus.deployment.pkg.builditem.OutputTargetBuildItem;
+import me.nithanim.quarkus.azure.generic.function.extension.deployment.builditems.FunctionClassRequestBuildItem;
 import me.nithanim.quarkus.azure.generic.function.extension.deployment.builditems.FunctionClassResultBuildItem;
+import me.nithanim.quarkus.azure.generic.function.extension.deployment.proxygen.ProxyInterfaceGenerator;
 
 public class FunctionPackager {
 
@@ -45,7 +41,6 @@ public class FunctionPackager {
           .configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false)
           .setSerializationInclusion(JsonInclude.Include.NON_NULL)
           .configure(SerializationFeature.INDENT_OUTPUT, true);
-  ;
 
   @BuildStep
   public List<IndexDependencyBuildItem> indexAnnotations() {
@@ -61,44 +56,84 @@ public class FunctionPackager {
       CurateOutcomeBuildItem curateOutcomeBuildItem,
       OutputTargetBuildItem outputTargetBuildItem,
       PackageConfig packageConfig,
-      List<FunctionClassResultBuildItem> functionClassResultBuildItems,
-      CombinedIndexBuildItem baseIndex,
+      List<FunctionClassRequestBuildItem> functionClassRequestBuildItems,
       @SuppressWarnings("unused") JarBuildItem jar)
       throws IOException {
 
-    Indexer indexer = new Indexer();
-    indexer.indexClass(Override.class);
-    indexer.indexClass(Target.class);
-    indexer.indexClass(Retention.class);
-    for (FunctionClassResultBuildItem functionClassResultBuildItem :
-        functionClassResultBuildItems) {
+    Set<Method> generatedMethods = generateMethods(functionClassRequestBuildItems);
+
+    String jarName = getRunnerJarName(outputTargetBuildItem, packageConfig);
+    String relativePath = "../" + jarName;
+
+    Map<String, FunctionConfiguration> functionConfigurations =
+        generateFunctionConfigurations(generatedMethods, relativePath);
+
+    generateAzureFunctionsDirectory(outputTargetBuildItem, functionConfigurations, jarName);
+
+    // I don't know what I am doing, honestly.
+    // This is a workaround such that >this< packaging method is called by the build process.
+    // Otherwise, it would be dropped because it is not needed. Not sure how e.g. Docker or
+    // native-image does it.
+    return new GeneratedFileSystemResourceBuildItem("testtest", new byte[0]);
+  }
+
+  /** Generates fake proxy methods for generation of the config by the Azure maven plugin. */
+  private Set<Method> generateMethods(
+      List<FunctionClassRequestBuildItem> functionClassRequestBuildItems) {
+
+    // Since the Azure maven plugin works with reflection, we load our fake proxies in a
+    // classloader.
+    // To prevent pollution, we make our own.
+    var temporaryClassloader =
+        new ClassLoader("AzureGenericFunctionsCL", Thread.currentThread().getContextClassLoader()) {
+          public Class<?> defineClass(String name, byte[] b) {
+            return defineClass(name, b, 0, b.length);
+          }
+        };
+
+    Set<Method> methods = new HashSet<>();
+    ProxyInterfaceGenerator proxyGenerator = new ProxyInterfaceGenerator();
+    for (FunctionClassRequestBuildItem functionClassRequestBuildItem :
+        functionClassRequestBuildItems) {
+
+      FunctionClassResultBuildItem functionClassResultBuildItem =
+          proxyGenerator.generateFakeProxy(
+              functionClassRequestBuildItem.getClassInfo(),
+              functionClassRequestBuildItem.getMethodInfos());
       byte[] classFile = functionClassResultBuildItem.getClassFile();
-      ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(classFile);
-      indexer.index(byteArrayInputStream);
+
+      Class<?> fakeProxyClass =
+          temporaryClassloader.defineClass(
+              functionClassResultBuildItem.getClassName().toString(), classFile);
+      List<Method> fakeProxyEntryMethods = Arrays.asList(fakeProxyClass.getDeclaredMethods());
+      methods.addAll(fakeProxyEntryMethods);
     }
-    Index generatedFunctionsIndex = indexer.complete();
 
-    IndexView index = CompositeIndex.create(baseIndex.getIndex(), generatedFunctionsIndex);
-    // IndexView index = baseIndex.getIndex();
+    return methods;
+  }
 
-    Set<MethodInfo> generatedClasses =
-        functionClassResultBuildItems.stream()
-            .flatMap(
-                bi -> {
-                  var clazz = index.getClassByName(bi.getClassName());
-                  return bi.getMethodName().stream().map(clazz::firstMethod);
-                })
-            .collect(Collectors.toSet());
-
+  /**
+   * Passes the methods of the fake proxy to the Azure maven plugin library to create the expected
+   * json for the Azure functions host.
+   */
+  private Map<String, FunctionConfiguration> generateFunctionConfigurations(
+      Set<Method> generatedMethods, String relativePath) {
     AnnotationHandler handler = new AnnotationHandlerImpl();
     Map<String, FunctionConfiguration> functionConfigurations =
-        getFunctionConfigurations(index, generatedClasses, handler);
+        getFunctionConfigurations(generatedMethods, handler);
 
-    String jarName = outputTargetBuildItem.getBaseName() + packageConfig.runnerSuffix + ".jar";
-    Path sourceJarPath = outputTargetBuildItem.getOutputDirectory().resolve(jarName);
-    String relativePath = "../" + jarName;
     functionConfigurations.values().forEach(c -> c.setScriptFile(relativePath));
+    return functionConfigurations;
+  }
 
+  /** Creates the filesystem structure that is expected as zip file by the Azure functions host. */
+  private void generateAzureFunctionsDirectory(
+      OutputTargetBuildItem outputTargetBuildItem,
+      Map<String, FunctionConfiguration> functionConfigurations,
+      String jarName)
+      throws IOException {
+    // TODO functions that were removed in code stay until a manual clean
+    Path sourceJarPath = outputTargetBuildItem.getOutputDirectory().resolve(jarName);
     Path functionsPath = outputTargetBuildItem.getOutputDirectory().resolve("azure-functions");
     Files.createDirectories(functionsPath);
     copyHostJson(functionsPath);
@@ -109,13 +144,12 @@ public class FunctionPackager {
       Files.createDirectories(functionPath);
       writeFunctionJson(functionPath, entry.getValue());
     }
+  }
 
-    // I don't know what I am doing, honestly.
-    // This is a workaround such that >this< packaging method is called by the build process.
-    // Otherwise, it would be dropped because it is not needed. Not sure how e.g. Docker or
-    // native-image
-    // does it.
-    return new GeneratedFileSystemResourceBuildItem("testtest", new byte[0]);
+  @NotNull
+  private String getRunnerJarName(
+      OutputTargetBuildItem outputTargetBuildItem, PackageConfig packageConfig) {
+    return outputTargetBuildItem.getBaseName() + packageConfig.runnerSuffix + ".jar";
   }
 
   private void copyHostJson(Path functionsPath) throws IOException {
@@ -156,10 +190,10 @@ public class FunctionPackager {
   }
 
   private Map<String, FunctionConfiguration> getFunctionConfigurations(
-      IndexView index, Set<MethodInfo> generatedClasses, AnnotationHandler handler) {
+      Set<Method> generatedMethods, AnnotationHandler handler) {
     try {
       Map<String, FunctionConfiguration> configMap =
-          handler.generateConfigurations(index, generatedClasses);
+          handler.generateConfigurations(generatedMethods);
       configMap.values().forEach(FunctionConfiguration::validate);
       return configMap;
     } catch (AzureExecutionException e) {

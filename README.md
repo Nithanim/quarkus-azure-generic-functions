@@ -4,8 +4,7 @@ This Quarkus extension allows Quarkus to be used for Azure Functions with all th
 > THIS IS HIGHLY WORK IN PROGRESS
 
 > **Warning**
-> It requires a custom version of the azure-maven-plugins (https://github.com/Nithanim/azure-maven-plugins) where the usage of reflection is replaced by jandex.
-
+> RequestScope does currently not work
 
 
 ## How it works
