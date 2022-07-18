@@ -60,7 +60,7 @@ public class FunctionProcessor {
     List<FunctionClassRequestBuildItem> buildItems = new ArrayList<>();
     for (List<AnnotationInstance> annotationsInOneClass : byClasses.values()) {
       var classInfo = getClass(annotationsInOneClass);
-      List<MethodInfo> methods = getMethods(allAnnotations);
+      List<MethodInfo> methods = getMethods(annotationsInOneClass);
       buildItems.add(new FunctionClassRequestBuildItem(classInfo, methods));
     }
     return buildItems;
